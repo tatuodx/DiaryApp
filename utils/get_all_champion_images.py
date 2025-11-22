@@ -3,8 +3,12 @@ import os
 import json
 
 # 1. 最新バージョンを取る
-v = requests.get("https://ddragon.leagueoflegends.com/api/versions.json").json()[0]
-print("version:", v)
+try:
+    v = requests.get("https://ddragon.leagueoflegends.com/api/versions.json", timeout=10).json()[0]
+    print("version:", v)
+except (requests.RequestException, IndexError) as e:
+    print(f"バージョン取得エラー: {e}")
+    exit(1)
 
 # 2. champion.json を取る
 cj = requests.get(f"https://ddragon.leagueoflegends.com/cdn/{v}/data/en_US/champion.json").json()
