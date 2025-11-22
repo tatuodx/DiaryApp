@@ -27,4 +27,6 @@ for key, info in champions.items():
         splash_url = f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{key}_{skin_num}.jpg"
         r2 = requests.get(splash_url)
         if r2.ok:
-            open(f"champion_splashes/{key}_{skin_num}.jpg", "wb").write(r2.content)
+            # with文を使ってファイルを自動的にクローズする
+            with open(f"champion_splashes/{key}_{skin_num}.jpg", "wb") as f:
+                f.write(r2.content)
