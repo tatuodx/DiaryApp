@@ -83,7 +83,7 @@ class TimelineWidget(QWidget):
             painter.drawText(8, y + (self.slot_height // 2) + 5, label)
 
         # イベント描画
-        for idx, ev in enumerate(sorted(self.events, key=lambda e: e["start"])):
+        for ev in sorted(self.events, key=lambda e: e["start"]):
             top_min = max(ev["start"] - self.start_min, 0)
             bottom_min = min(ev["end"] - self.start_min, self.total_minutes)
             if bottom_min <= 0 or top_min >= self.total_minutes:
