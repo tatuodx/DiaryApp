@@ -1,11 +1,13 @@
 import os
 import json
+import unicodedata
 from PySide6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QTextEdit, QPushButton,
     QComboBox, QVBoxLayout, QHBoxLayout, QGridLayout, QMessageBox,
-    QCompleter
+    QCompleter, QGraphicsDropShadowEffect
 )
 from PySide6.QtCore import Qt, QStringListModel
+from PySide6.QtGui import QFont, QColor
 from openai import OpenAI
 
 CHAMPION_JSON = os.path.join(os.path.dirname(__file__), "champion_names_ja.json")
@@ -15,6 +17,10 @@ class LolPickSupportTab(QWidget):
         super().__init__(parent)
         self.client = client
         self.champions = self._load_champions()
+
+        # UI フォント設定（Windows でポピュラーなフォントを優先）
+        ui_font = QFont("Yu Gothic UI", 10)
+        self.setFont(ui_font)
 
         # バン：10個（5×2段）
         self.ban_combos = [QComboBox() for _ in range(10)]
@@ -42,7 +48,9 @@ class LolPickSupportTab(QWidget):
         self.role_combo.addItems(["指定なし", "トップ", "ジャングル", "ミッド", "ADC", "サポート"])
 
         self.generate_button = QPushButton("最適ピックを提案")
+        self.generate_button.setObjectName("primaryButton")
         self.clear_button = QPushButton("クリア")
+        self.clear_button.setObjectName("clearButton")
 
         self.result_box = QTextEdit()
         self.result_box.setReadOnly(True)
@@ -50,10 +58,14 @@ class LolPickSupportTab(QWidget):
 
         # レイアウト構築
         layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
         # バン（2行×5列）
-        layout.addWidget(QLabel("バン（10体、上から順に）:"))
+        layout.addWidget(QLabel("バン（10体）:"))
         ban_grid = QGridLayout()
+        ban_grid.setHorizontalSpacing(8)
+        ban_grid.setVerticalSpacing(8)
         for i, cb in enumerate(self.ban_combos):
             row = i // 5
             col = i % 5
@@ -63,9 +75,12 @@ class LolPickSupportTab(QWidget):
         # 味方ピック（固定ロールラベルを上に表示）
         layout.addWidget(QLabel("味方の既ピック（5体） — 上のラベルがロールです:"))
         our_grid = QGridLayout()
+        our_grid.setHorizontalSpacing(8)
         # ラベル行
         for i, role in enumerate(self.role_labels):
-            our_grid.addWidget(QLabel(role), 0, i)
+            lbl = QLabel(role)
+            lbl.setAlignment(Qt.AlignCenter)
+            our_grid.addWidget(lbl, 0, i)
         # チャンピオン選択行
         for i, champ_cb in enumerate(self.our_picks_combos):
             our_grid.addWidget(champ_cb, 1, i)
@@ -74,6 +89,7 @@ class LolPickSupportTab(QWidget):
         # 敵ピック
         layout.addWidget(QLabel("敵の既ピック（5体）:"))
         enemy_h = QHBoxLayout()
+        enemy_h.setSpacing(8)
         for cb in self.enemy_picks_combos:
             enemy_h.addWidget(cb)
         layout.addLayout(enemy_h)
@@ -91,6 +107,67 @@ class LolPickSupportTab(QWidget):
         layout.addWidget(self.result_box)
         self.setLayout(layout)
 
+        # 影を付けて浮いた印象に（控えめ）
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(12)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 25))
+        self.result_box.setGraphicsEffect(shadow)
+
+        # スタイルシート（白基調・丸み・柔らかい色）
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #ffffff;
+                color: #333333;
+                font-family: "Yu Gothic UI", "Segoe UI", "Meiryo", sans-serif;
+            }
+            QLabel {
+                color: #444444;
+                font-weight: 600;
+            }
+            QComboBox, QLineEdit {
+                border: 1px solid #efecec;
+                border-radius: 10px;
+                padding: 6px 10px;
+                background: #ffffff;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: none;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid #eee;
+                selection-background-color: #f0f6ff;
+            }
+            QTextEdit {
+                border: 1px solid #f0f0f0;
+                border-radius: 12px;
+                background: #fafafa;
+                padding: 8px;
+                color: #222;
+            }
+            QPushButton#primaryButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6cc3ff, stop:1 #3aa0ff);
+                color: white;
+                border: none;
+                border-radius: 12px;
+                padding: 8px 14px;
+                font-weight: 600;
+            }
+            QPushButton#primaryButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #7fd7ff, stop:1 #4ab6ff);
+            }
+            QPushButton#clearButton {
+                background: #ffffff;
+                color: #444;
+                border: 1px solid #e8e8e8;
+                border-radius: 10px;
+                padding: 6px 12px;
+            }
+        """)
+
         # シグナル
         self.generate_button.clicked.connect(self.on_generate)
         self.clear_button.clicked.connect(self.on_clear)
@@ -99,34 +176,29 @@ class LolPickSupportTab(QWidget):
         try:
             with open(CHAMPION_JSON, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # 確実に先頭に指定なしがあるようにする
             if "指定なし" not in data:
                 data.insert(0, "指定なし")
             return data
         except Exception:
-            # フォールバック：簡易リスト
             return ["指定なし", "Aatrox", "Ahri", "Akali"]
 
     def _to_hiragana(self, s: str) -> str:
-        # カタカナをひらがなに正規化、英字は小文字化、全角スペース除去など簡易正規化
         if not s:
             return ""
-        out = []
-        for ch in s.strip().replace("　", " "):
+        t = unicodedata.normalize("NFKC", s.strip())
+        out_chars = []
+        for ch in t:
             code = ord(ch)
-            # カタカナ範囲判定（U+30A1〜U+30F6）
             if 0x30A1 <= code <= 0x30F6:
-                out.append(chr(code - 0x60))  # カタカナ→ひらがな
+                out_chars.append(chr(code - 0x60))
             else:
-                out.append(ch)
-        norm = "".join(out).lower()
-        # 小書き文字等はそのままでも可。不要記号を削除
-        for ch in ["・", " ", "(", ")", "（", "）", "：", ":", "　"]:
+                out_chars.append(ch)
+        norm = "".join(out_chars).lower()
+        for ch in ["・", " ", "(", ")", "（", "）", "：", ":", "　", "ー", "－", "—"]:
             norm = norm.replace(ch, "")
         return norm
 
     def _make_editable_with_completer(self, combo: QComboBox):
-        # 編集可能にして、先頭一致（ひらがな/カタカナを無視）で補完を出す
         combo.setEditable(True)
         model = QStringListModel(self.champions, combo)
         completer = QCompleter(model, combo)
@@ -135,7 +207,6 @@ class LolPickSupportTab(QWidget):
         combo.setCompleter(completer)
         combo._smodel = model
         combo._completer = completer
-        # テキスト入力時に候補を更新する
         combo.lineEdit().textEdited.connect(lambda txt, c=combo: self._update_completer(c, txt))
 
     def _update_completer(self, combo: QComboBox, text: str):
@@ -150,26 +221,39 @@ class LolPickSupportTab(QWidget):
                     continue
                 if self._to_hiragana(name).startswith(nt):
                     candidates.append(name)
-            # 先頭一致で候補が無ければ部分一致でフォールバック（利便性向上）
             if not candidates:
                 for name in self.champions:
                     if name == "指定なし":
                         continue
                     if nt in self._to_hiragana(name):
                         candidates.append(name)
-            # 最後に限定数（例えば50）で切る
             candidates = candidates[:50]
-        # 空の場合は指定なしを含める
         if not candidates:
             candidates = ["指定なし"]
+
+        # モデルを更新して補完候補を差し替える
         combo._smodel.setStringList(candidates)
-        # 表示更新
-        combo.completer().complete()
+        combo._completer.setModel(combo._smodel)
+
+        # 補完ポップアップを確実に表示する処理
+        # - プレフィックスは空にして候補全体を表示（候補は既にフィルタ済み）
+        # - lineEdit のカーソル位置の矩形を指定して表示位置を安定化
+        try:
+            combo._completer.setCompletionPrefix("")
+        except Exception:
+            pass
+
+        # 完全に消える問題に対処するため、明示的にカーソル矩形を渡して表示させる
+        try:
+            rect = combo.lineEdit().cursorRect()
+            combo._completer.complete(rect)
+        except Exception:
+            # フォールバック：位置指定なしで表示
+            combo._completer.complete()
 
     def on_clear(self):
         for cb in self.ban_combos + self.enemy_picks_combos + self.our_picks_combos:
             cb.setCurrentIndex(0)
-            # もし編集済みのテキストがある場合はクリア
             if cb.lineEdit():
                 cb.lineEdit().clear()
         self.role_combo.setCurrentIndex(0)
@@ -187,36 +271,17 @@ class LolPickSupportTab(QWidget):
         if role == "指定なし":
             role = "不特定"
 
-        # プロンプト作成（日本語） — 指定の文言を含める
         prompt = (
             "あなたは League of Legends のドラフトフェーズ専門アナリストです。"
             "OP.GGなどの統計系サイト、公式のLOL情報、LoL wiki、SNSでのトッププレイヤーの傾向を考慮して最適なピックを提案してください。"
-            "パッチ15.23のメタ、ロールごとの強弱、ピック構成、チャンピオン相性、シナジー、カウンター、パワースパイク、エンゲージ/ディスエンゲージ構成、レンジ差、役割の補完などを深く理解しています。"
-            "以下の情報をもとに、ユーザーが選ぶべき最適なチャンピオン候補を「最大3体」提案してください。"
             "\n\nバン一覧: " + (", ".join(bans) if bans else "なし")
             + "\n味方の既ピック: " + (", ".join(our_picks) if our_picks else "なし")
             + "\n敵の既ピック: " + (", ".join(enemy_picks) if enemy_picks else "なし")
             + "\n自分のロール: " + role
-
-            +"【出力内容】"
-            "1. 最適ピック候補（最大3体）: 各チャンピオンについて、ユーザーのロールで適切に運用できるチャンピオンを選んでください。"
-
-            "2. 推奨理由（以下の観点で詳細に説明）:"
-            " - 対面ロールが確定している場合のレーン相性（有利ポイント / 不利ポイント）"
-            " - 味方構成とのシナジー（エンゲージ、ディスエンゲージ、CC連携、スケーリングの噛み合い）"
-            " - 敵構成へのカウンター要素（レンジ差、耐久 vs バースト、分断能力、エンゲージ耐性など）"
-            " - チーム構成バランス（AD/AP、前衛/後衛、CC量、オブジェクト戦力）"
-
-            "【ルール】"
-            " - BANされたチャンピオンは必ず候補から除外してください。"
-            " - ユーザーのロールに適したチャンピオンのみ提案してください。"
-            " - 敵のロールが曖昧な場合は「仮定」を明示し、その上で分析を行ってください。"
-            " - 可能な限り具体的な理由を提示し、抽象的な回答は避けてください。"
-            " - 現パッチの一般的なメタ傾向や構成理論に基づいた説明をしてください。"
-            " - 600トークン以内に収めてください。"
+            + "\n\n注意: バンされたチャンピオンは候補から除外し、味方・敵の既ピックとのシナジーやカウンターを考慮してください。"
+            "\n出力は箇条書き（1〜3位）で、各チャンピオン名・簡潔な説明（20〜60字程度）を付けてください。"
         )
 
-        # （UI上にプロンプトを表示しない） -> そのままAIへ送信
         self.result_box.setPlainText("AIに問い合わせ中...")
         try:
             response = self.client.chat.completions.create(
@@ -228,7 +293,6 @@ class LolPickSupportTab(QWidget):
                 temperature=0.6,
                 max_tokens=600
             )
-            # API応答からテキストを取得（クライアント実装に合わせる）
             ai_text = None
             try:
                 ai_text = response.choices[0].message["content"]
@@ -251,7 +315,6 @@ class LolPickSupportTab(QWidget):
         return vals
 
     def _collect_our_picks(self):
-        # 味方ピックを「チャンピオン（ロール）」形式で返す。ロールは左から固定の role_labels を使用。
         vals = []
         for i, champ_cb in enumerate(self.our_picks_combos):
             champ = champ_cb.currentText().strip()
