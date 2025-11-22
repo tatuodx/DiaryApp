@@ -21,7 +21,6 @@ for key, info in champions.items():
             f.write(r.content)
 
     # スプラッシュ（スキン0..N）
-    num_skins = len(info.get("skins", []))
     for s in info.get("skins", []):
         skin_num = s["num"]  # 0,1,2...
         splash_url = f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{key}_{skin_num}.jpg"
