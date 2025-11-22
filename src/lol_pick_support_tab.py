@@ -6,17 +6,69 @@ from PySide6.QtWidgets import (
     QComboBox, QVBoxLayout, QHBoxLayout, QGridLayout, QMessageBox,
     QCompleter, QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, QStringListModel
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt, QStringListModel, QTimer, QByteArray, QBuffer, QRect
+from PySide6.QtGui import QFont, QColor, QPixmap, QGuiApplication, QPainter, QPen
+import tempfile
+import time
+from io import BytesIO
 from openai import OpenAI
 
 CHAMPION_JSON = os.path.join(os.path.dirname(__file__), "champion_names_ja.json")
+
+# --- 画面中央に枠線を描画する透過オーバーレイウィジェット ---
+class ScreenOverlay(QWidget):
+    """デスクトップ上に透過のオーバーレイを表示し、中央に指定サイズの枠線を描画する。"""
+    def __init__(self, width: int = 1280, height: int = 720, parent=None):
+        super().__init__(parent)
+        self._rect_w = width
+        self._rect_h = height
+
+        # ウィンドウは枠のみ表示する透明ウィンドウにする
+        flags = Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # マウスイベントは下のアプリに透過（クリック等を妨げない）
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        # サイズはスクリーン全体に合わせる
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            geom = screen.geometry()
+            self.setGeometry(geom)
+        else:
+            self.resize(1920, 1080)
+
+    def paintEvent(self, event):
+        """中央に枠線（長方形）を描画する。枠は白基調デザインに合わせた柔らかい色。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 半透明に薄くスクリーン全体を暗くする（視認性のため、必要なければコメントアウト可）
+        # painter.fillRect(self.rect(), QColor(0, 0, 0, 40))
+
+        # 枠線の色・太さ
+        pen = QPen(QColor(60, 120, 220, 200))  # 柔らかい青
+        pen.setWidth(3)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        # 中央位置を計算して長方形を描く
+        sw = self.width()
+        sh = self.height()
+        rw = min(self._rect_w, sw - 40)
+        rh = min(self._rect_h, sh - 40)
+        rx = (sw - rw) // 2
+        ry = (sh - rh) // 2
+        # 角を丸く描画（丸みを持たせる）
+        painter.drawRoundedRect(rx, ry, rw, rh, 12, 12)
 
 class LolPickSupportTab(QWidget):
     def __init__(self, client: OpenAI | None = None, parent=None):
         super().__init__(parent)
         self.client = client
         self.champions = self._load_champions()
+        # スクリーンオーバーレイ（中央に 960x540 枠を表示）
+        self._overlay = ScreenOverlay(1280, 720)
+        self._overlay.hide()
 
         # UI フォント設定（Windows でポピュラーなフォントを優先）
         ui_font = QFont("Yu Gothic UI", 10)
@@ -47,6 +99,8 @@ class LolPickSupportTab(QWidget):
         self.role_combo = QComboBox()
         self.role_combo.addItems(["指定なし", "トップ", "ジャングル", "ミッド", "ADC", "サポート"])
 
+        self.auto_get_button = QPushButton("チャンピオン自動取得")
+        self.auto_get_button.setObjectName("primaryButton")
         self.generate_button = QPushButton("最適ピックを提案")
         self.generate_button.setObjectName("primaryButton")
         self.clear_button = QPushButton("クリア")
@@ -99,6 +153,7 @@ class LolPickSupportTab(QWidget):
         h3.addWidget(QLabel("自分のロール:"))
         h3.addWidget(self.role_combo)
         h3.addStretch()
+        h3.addWidget(self.auto_get_button)
         h3.addWidget(self.generate_button)
         h3.addWidget(self.clear_button)
         layout.addLayout(h3)
@@ -169,6 +224,7 @@ class LolPickSupportTab(QWidget):
         """)
 
         # シグナル
+        self.auto_get_button.clicked.connect(self.on_auto_get)
         self.generate_button.clicked.connect(self.on_generate)
         self.clear_button.clicked.connect(self.on_clear)
 
@@ -250,6 +306,110 @@ class LolPickSupportTab(QWidget):
         except Exception:
             # フォールバック：位置指定なしで表示
             combo._completer.complete()
+    
+    def on_auto_get(self):
+        """スクリーンショットの自動取得を開始/停止するトグル。
+        - オーバーレイは開始時に表示、停止時に非表示にする。
+        """
+        interval_ms = getattr(self, "_auto_interval", 5000)
+        if not hasattr(self, "_auto_timer"):
+            self._auto_timer = QTimer(self)
+            self._auto_timer.timeout.connect(self._capture_screen_once)
+            self._auto_interval = interval_ms
+
+        if not self._auto_timer.isActive():
+            # 開始：タイマーとオーバーレイを表示
+            self._auto_timer.start(self._auto_interval)
+            self.auto_get_button.setText("自動取得停止")
+            self.auto_get_button.setObjectName("primaryButton")
+            try:
+                # オーバーレイを前面に表示
+                self._overlay.show()
+                self._overlay.raise_()
+            except Exception:
+                pass
+            self.result_box.append("自動取得を開始しました。")
+        else:
+            # 停止：タイマーとオーバーレイを非表示
+            self._auto_timer.stop()
+            self.auto_get_button.setText("チャンピオン自動取得")
+            try:
+                self._overlay.hide()
+            except Exception:
+                pass
+            self.result_box.append("自動取得を停止しました。")
+
+    def _capture_screen_once(self):
+        """単発でスクリーンショットを取得して保存し、可能であれば OCR を試行する内部処理。
+        変更点: デスクトップ全体ではなく、オーバーレイで示した中央の矩形領域のみを保存します。
+        """
+        try:
+            screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                self.result_box.append("スクリーン取得に失敗しました: primaryScreen が見つかりません。")
+                return
+
+            # オーバーレイで描画している矩形領域 (スクリーン座標) を計算
+            geom = screen.geometry()
+            sw = geom.width()
+            sh = geom.height()
+            # オーバーレイ側と同じ計算を再現（余白 40px を考慮）
+            rw = min(self._overlay._rect_w, sw - 40)
+            rh = min(self._overlay._rect_h, sh - 40)
+            rx = geom.x() + (sw - rw) // 2
+            ry = geom.y() + (sh - rh) // 2
+
+            # 指定矩形のみをキャプチャ
+            pix = screen.grabWindow(0, rx, ry, rw, rh)
+
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(tempfile.gettempdir(), f"diaryapp_screenshot_{ts}.png")
+            saved = pix.save(path, "PNG")
+            if not saved:
+                self.result_box.append("スクリーンショットの保存に失敗しました。")
+                return
+
+            ocr_text = None
+            # OCR が利用可能なら試行（pytesseract + PIL）
+            try:
+                import pytesseract
+                from PIL import Image
+                buf = QBuffer()
+                buf.open(QBuffer.ReadWrite)
+                pix.save(buf, "PNG")
+                data = bytes(buf.data())
+                buf.close()
+                img = Image.open(BytesIO(data))
+                try:
+                    # まず日本語指定で試す
+                    ocr_text = pytesseract.image_to_string(img, lang="jpn")
+                except Exception:
+                    ocr_text = pytesseract.image_to_string(img)
+            except Exception:
+                ocr_text = None
+
+            # OCR結果からチャンピオン名候補を簡易抽出（正規化して部分一致）
+            found = []
+            if ocr_text:
+                norm = self._to_hiragana(ocr_text)
+                for name in self.champions:
+                    if name == "指定なし":
+                        continue
+                    if self._to_hiragana(name) in norm:
+                        found.append(name)
+
+            # 表示（どの領域を保存したか明示）
+            msg = f"スクリーンショットを保存しました: {path} (領域: x={rx}, y={ry}, w={rw}, h={rh})"
+            if found:
+                msg += "\n検出されたチャンピオン候補: " + ", ".join(found)
+            else:
+                if ocr_text is not None:
+                    msg += "\nOCR 実行済み。候補は検出されませんでした。"
+                else:
+                    msg += "\nOCR は利用できません（pytesseract が未インストール）。"
+            self.result_box.append(msg)
+        except Exception as e:
+            self.result_box.append(f"スクリーンショット取得中にエラーが発生しました: {e}")
 
     def on_clear(self):
         for cb in self.ban_combos + self.enemy_picks_combos + self.our_picks_combos:
