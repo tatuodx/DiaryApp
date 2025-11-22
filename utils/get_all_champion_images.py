@@ -30,7 +30,7 @@ for key, info in champions.items():
     for s in info.get("skins", []):
         skin_num = s["num"]  # 0,1,2...
         splash_url = f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{key}_{skin_num}.jpg"
-        r2 = requests.get(splash_url)
+        r2 = requests.get(splash_url, timeout=10)  # タイムアウトを10秒に設定
         if r2.ok:
             # with文を使ってファイルを自動的にクローズする
             with open(f"champion_splashes/{key}_{skin_num}.jpg", "wb") as f:
