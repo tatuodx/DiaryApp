@@ -148,7 +148,8 @@ class TodoTab(QWidget):
     def save_todos(self):
         """リストを JSON ファイルに保存する"""
         try:
-            todos = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+            # None チェックを追加して安全にテキストを取得
+            todos = [self.list_widget.item(i).text() for i in range(self.list_widget.count()) if self.list_widget.item(i) is not None]
             with open(TODO_FILE, "w", encoding="utf-8") as f:
                 json.dump(todos, f, ensure_ascii=False, indent=2)
             QMessageBox.information(self, "保存", f"TODO を保存しました ({TODO_FILE})")

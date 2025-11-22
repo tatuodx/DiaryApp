@@ -1,9 +1,9 @@
 import sys
 import os
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QFrame, QHBoxLayout
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QFrame
 )
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt
 from openai import OpenAI
 

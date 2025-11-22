@@ -473,13 +473,18 @@ class DiaryTab(QWidget):
         dv.addLayout(detail_buttons)
         detail_widget.setLayout(dv)
 
-        # シャドウ（浮いたカード風）
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(12)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 30))
-        detail_widget.setGraphicsEffect(shadow)
-        self.scroll.setGraphicsEffect(shadow)
+        # detail_widget用のシャドウエフェクト
+        shadow_detail = QGraphicsDropShadowEffect(self)
+        shadow_detail.setBlurRadius(12)
+        shadow_detail.setOffset(0, 6)
+        shadow_detail.setColor(QColor(0, 0, 0, 30))
+        detail_widget.setGraphicsEffect(shadow_detail)
+        # scroll用のシャドウエフェクト
+        shadow_scroll = QGraphicsDropShadowEffect(self)
+        shadow_scroll.setBlurRadius(12)
+        shadow_scroll.setOffset(0, 6)
+        shadow_scroll.setColor(QColor(0, 0, 0, 30))
+        self.scroll.setGraphicsEffect(shadow_scroll)
 
         # メインレイアウトを左右に分割
         main_h = QHBoxLayout()
@@ -536,7 +541,7 @@ class DiaryTab(QWidget):
                 background: #f5f5f5;
                 color: #999999;
             }
-            /* プライマリボタンのグラデーション（タイポ修正 y2:1）。万一無効になっても背景色で視認性を確保 */
+            /* プライマリボタンのグラデーション。万一無効になっても背景色で視認性を確保 */
             QPushButton#primary {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6cc3ff, stop:1 #3aa0ff);
                 background-color: #3aa0ff;
