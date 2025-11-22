@@ -1,4 +1,6 @@
-import requests, os, json
+import requests
+import os
+import json
 
 # 1. 最新バージョンを取る
 v = requests.get("https://ddragon.leagueoflegends.com/api/versions.json").json()[0]
