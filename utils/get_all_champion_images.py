@@ -16,7 +16,9 @@ for key, info in champions.items():
     icon_url = f"https://ddragon.leagueoflegends.com/cdn/{v}/img/champion/{key}.png"
     r = requests.get(icon_url)
     if r.ok:
-        open(f"champion_icons/{key}.png", "wb").write(r.content)
+        # ファイルを自動的にクローズするため with 文を使用
+        with open(f"champion_icons/{key}.png", "wb") as f:
+            f.write(r.content)
 
     # スプラッシュ（スキン0..N）
     num_skins = len(info.get("skins", []))
