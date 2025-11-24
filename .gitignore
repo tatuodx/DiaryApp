@@ -3,3 +3,7 @@ myenv/
 Diaries/
 champion_icons/
 champion_splashes/
+trim/
+utils/champion_model.pth
+utils/train_list.txt
+utils/training_curve.png

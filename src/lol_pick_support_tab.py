@@ -12,6 +12,12 @@ import tempfile
 import time
 from io import BytesIO
 from openai import OpenAI
+import torch
+import torch.nn as nn
+from torchvision import transforms
+from PIL import Image
+import cv2
+import numpy as np
 
 CHAMPION_JSON = os.path.join(os.path.dirname(__file__), "champion_names_ja.json")
 
@@ -39,19 +45,17 @@ class ScreenOverlay(QWidget):
             self.resize(1920, 1080)
 
     def paintEvent(self, event):
-        """中央に枠線（長方形）を描画する。枠は白基調デザインに合わせた柔らかい色。"""
+        """中央に枠線（長方形）を描画し、その枠内の左上と右上にそれぞれ横長の赤い長方形枠を描画する。"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        # 半透明に薄くスクリーン全体を暗くする（視認性のため、必要なければコメントアウト可）
-        # painter.fillRect(self.rect(), QColor(0, 0, 0, 40))
 
-        # 枠線の色・太さ
-        pen = QPen(QColor(60, 120, 220, 200))  # 柔らかい青
+        # メイン枠線の色・太さ（柔らかい青）
+        pen = QPen(QColor(60, 120, 220, 200))
         pen.setWidth(3)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
 
-        # 中央位置を計算して長方形を描く
+        # 中央位置を計算してメイン長方形を描く
         sw = self.width()
         sh = self.height()
         rw = min(self._rect_w, sw - 40)
@@ -61,14 +65,69 @@ class ScreenOverlay(QWidget):
         # 角を丸く描画（丸みを持たせる）
         painter.drawRoundedRect(rx, ry, rw, rh, 12, 12)
 
+        # --- 枠内の左上と右上に横長の赤い長方形枠を描画 ---
+        # 赤色のペン（枠線のみ）
+        red_pen = QPen(QColor(220, 60, 60, 200))  # 赤色
+        red_pen.setWidth(2)
+        painter.setPen(red_pen)
+        painter.setBrush(Qt.NoBrush)
+
+        # 横長の長方形のサイズ（枠内に収まるように調整）
+        rect_width = int(rw * 0.15)  # メイン枠の15%幅
+        rect_height = int(rh * 0.08)  # メイン枠の8%高さ
+        margin = 10  # メイン枠からのマージン
+
+        # 左上の横長長方形
+        left_top_x = rx + margin
+        left_top_y = ry + margin
+        painter.drawRoundedRect(left_top_x, left_top_y, rect_width, rect_height, 6, 6)
+
+        # 右上の横長の長方形
+        right_top_x = rx + rw - rect_width - margin
+        right_top_y = ry + margin
+        painter.drawRoundedRect(right_top_x, right_top_y, rect_width, rect_height, 6, 6)
+
+class SimpleCNN(nn.Module):
+    """
+    チャンピオンアイコン分類用の CNN モデル（32x32 入力）。
+    utils/champion_model.pth で保存された学習済みモデルと同じ構造。
+    """
+    def __init__(self, num_classes):
+        super(SimpleCNN, self).__init__()
+        # 畳み込み層1: 3ch → 16ch
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(2, 2)  # 32x32 → 16x16
+        
+        # 畳み込み層2: 16ch → 32ch
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool2d(2, 2)  # 16x16 → 8x8
+        
+        # 全結合層
+        self.fc1 = nn.Linear(32 * 8 * 8, 128)
+        self.relu3 = nn.ReLU()
+        self.fc2 = nn.Linear(128, num_classes)
+    
+    def forward(self, x):
+        x = self.pool1(self.relu1(self.conv1(x)))
+        x = self.pool2(self.relu2(self.conv2(x)))
+        x = x.view(x.size(0), -1)  # フラット化
+        x = self.relu3(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
 class LolPickSupportTab(QWidget):
     def __init__(self, client: OpenAI | None = None, parent=None):
         super().__init__(parent)
         self.client = client
         self.champions = self._load_champions()
-        # スクリーンオーバーレイ（中央に 960x540 枠を表示）
+        # スクリーンオーバーレイ（中央に 1280x720 枠を表示）
         self._overlay = ScreenOverlay(1280, 720)
         self._overlay.hide()
+        
+        # 学習済みモデルとラベルマッピングを読み込み
+        self._load_model()
 
         # UI フォント設定（Windows でポピュラーなフォントを優先）
         ui_font = QFont("Yu Gothic UI", 10)
@@ -339,9 +398,218 @@ class LolPickSupportTab(QWidget):
                 pass
             self.result_box.append("自動取得を停止しました。")
 
+    def _load_model(self):
+        """
+        学習済みモデル（champion_model.pth）を読み込み、推論用に準備します。
+        train_list.txt から画像パスとラベルの対応を読み込んでラベル→チャンピオン名のマッピングを作成します。
+        """
+        utils_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "utils")
+        model_path = os.path.join(utils_dir, "champion_model.pth")
+        train_list_path = os.path.join(utils_dir, "train_list.txt")
+        
+        # ラベル→チャンピオン名のマッピングを作成
+        self.label_to_champion = {}
+        if os.path.exists(train_list_path):
+            with open(train_list_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(",")
+                    if len(parts) != 2:
+                        continue
+                    img_path = parts[0].strip()
+                    try:
+                        label = int(parts[1].strip())
+                    except ValueError:
+                        print(f"警告: ラベルの解析に失敗しました: {line}")
+                        continue
+                    # champion_icons/ChampionName.png から ChampionName を抽出
+                    champion_name = os.path.splitext(os.path.basename(img_path))[0]
+                    self.label_to_champion[label] = champion_name
+        
+        num_classes = len(self.label_to_champion)
+        
+        # モデルの読み込み
+        self.model = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        if os.path.exists(model_path) and num_classes > 0:
+            try:
+                self.model = SimpleCNN(num_classes=num_classes).to(self.device)
+                self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
+                self.model.eval()
+                print(f"学習済みモデルを読み込みました: {model_path} (クラス数: {num_classes})")
+            except FileNotFoundError:
+                print(f"モデル読み込みエラー: ファイルが見つかりません: {model_path}")
+                self.model = None
+            except RuntimeError as e:
+                print(f"モデル読み込みエラー: モデル構造の不一致またはデバイスエラー: {e}")
+                self.model = None
+            except Exception as e:
+                print(f"モデル読み込みエラー（予期しないエラー）: {e}")
+                self.model = None
+        else:
+            print(f"警告: モデルファイルまたはtrain_list.txtが見つかりません。")
+        
+        # 画像前処理（学習時と同じ変換）
+        self.transform = transforms.Compose([
+            transforms.Resize((32, 32)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
+
+    def _classify_champion_icon(self, icon_image: Image.Image) -> str:
+        """
+        単一のチャンピオンアイコン画像を分類し、チャンピオン名を返します。
+        
+        Args:
+            icon_image: PIL.Image オブジェクト（チャンピオンアイコン1体分）
+        
+        Returns:
+            str: 予測されたチャンピオン名（不明な場合は "不明"）
+        """
+        if self.model is None:
+            return "不明"
+        
+        try:
+            # 前処理
+            img_tensor = self.transform(icon_image).unsqueeze(0).to(self.device)
+            
+            # 推論
+            with torch.no_grad():
+                outputs = self.model(img_tensor)
+                _, predicted = torch.max(outputs, 1)
+                label = predicted.item()
+            
+            # ラベルからチャンピオン名に変換
+            champion_name = self.label_to_champion.get(label, "不明")
+            return champion_name
+        except Exception as e:
+            print(f"分類エラー: {e}")
+            return "不明"
+
+    def _detect_champion_icons(self, box_img: Image.Image) -> list[Image.Image]:
+        """
+        赤枠領域の画像から、チャンピオンアイコンが映っている矩形領域を検出して切り出します。
+        
+        処理フロー:
+        1. PIL Image を OpenCV 形式（numpy配列）に変換
+        2. グレースケール化・二値化処理
+        3. 輪郭検出で矩形領域を抽出
+        4. 面積・アスペクト比でフィルタリング（アイコンサイズに該当するもののみ）
+        5. 左から順に最大5体まで切り出し
+        
+        Args:
+            box_img: 赤枠領域の PIL.Image（横長の矩形）
+        
+        Returns:
+            list[Image.Image]: 検出されたチャンピオンアイコン画像のリスト（最大5体）
+        """
+        try:
+            # PIL Image → OpenCV 形式（numpy配列）に変換
+            img_cv = cv2.cvtColor(np.array(box_img), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            
+            # 適応的二値化（照明の影響を軽減）
+            binary = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv2.THRESH_BINARY_INV, 11, 2
+            )
+            
+            # モルフォロジー処理でノイズ除去
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            morph = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            
+            # 輪郭検出
+            contours, _ = cv2.findContours(
+                morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            
+            # 矩形候補をフィルタリング
+            box_height = box_img.height
+            box_width = box_img.width
+            min_area = (box_height * 0.6) ** 2  # 最小面積（高さの60%の正方形）
+            max_area = (box_height * 1.2) ** 2  # 最大面積（高さの120%の正方形）
+            
+            detected_rects = []
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = w * h
+                aspect_ratio = w / h if h > 0 else 0
+                
+                # フィルタリング条件:
+                # - 面積が適切な範囲
+                # - アスペクト比が正方形に近い（0.7 ~ 1.3）
+                # - 高さが赤枠の50%以上
+                if (min_area <= area <= max_area and 
+                    0.7 <= aspect_ratio <= 1.3 and
+                    h >= box_height * 0.5):
+                    detected_rects.append((x, y, w, h))
+            
+            # 左から順にソート
+            detected_rects.sort(key=lambda r: r[0])
+            
+            # 最大5体まで切り出し
+            icon_images = []
+            for i, (x, y, w, h) in enumerate(detected_rects[:5]):
+                # マージンを少し持たせて切り出し（境界の情報を確保）
+                margin = 2
+                x1 = max(0, x - margin)
+                y1 = max(0, y - margin)
+                x2 = min(box_width, x + w + margin)
+                y2 = min(box_height, y + h + margin)
+                
+                icon_crop = box_img.crop((x1, y1, x2, y2))
+                icon_images.append(icon_crop)
+            
+            # 検出数が5未満の場合は警告ログ
+            if len(icon_images) < 5:
+                print(f"警告: 検出されたアイコン数が5未満です（{len(icon_images)}体）")
+            
+            return icon_images
+            
+        except Exception as e:
+            print(f"アイコン検出エラー: {e}")
+            import traceback
+            traceback.print_exc()
+            # エラー時は均等5分割にフォールバック
+            return self._fallback_split_icons(box_img)
+    
+    def _fallback_split_icons(self, box_img: Image.Image) -> list[Image.Image]:
+        """
+        アイコン検出に失敗した場合のフォールバック処理。
+        赤枠領域を単純に5等分して切り出します。
+        
+        Args:
+            box_img: 赤枠領域の PIL.Image
+        
+        Returns:
+            list[Image.Image]: 5等分されたアイコン画像のリスト
+        """
+        width = box_img.width
+        height = box_img.height
+        icon_width = width // 5
+        
+        icons = []
+        for i in range(5):
+            x1 = i * icon_width
+            x2 = x1 + icon_width
+            icon_crop = box_img.crop((x1, 0, x2, height))
+            icons.append(icon_crop)
+        
+        return icons
+
     def _capture_screen_once(self):
-        """単発でスクリーンショットを取得して保存し、可能であれば OCR を試行する内部処理。
-        変更点: デスクトップ全体ではなく、オーバーレイで示した中央の矩形領域のみを保存します。
+        """
+        スクリーンショットを取得し、赤枠内の5体のチャンピオンアイコンを分類します。
+        
+        処理フロー:
+        1. 画面中央の指定領域をキャプチャ
+        2. 左上と右上の赤枠領域をそれぞれ5分割してアイコンを切り出し
+        3. 各アイコンをモデルで分類
+        4. 切り出したアイコンを trim フォルダに保存（ファイル名: チャンピオン名_時刻.png）
+        5. 結果を表示
         """
         try:
             screen = QGuiApplication.primaryScreen()
@@ -353,7 +621,6 @@ class LolPickSupportTab(QWidget):
             geom = screen.geometry()
             sw = geom.width()
             sh = geom.height()
-            # オーバーレイ側と同じ計算を再現（余白 40px を考慮）
             rw = min(self._overlay._rect_w, sw - 40)
             rh = min(self._overlay._rect_h, sh - 40)
             rx = geom.x() + (sw - rw) // 2
@@ -362,54 +629,76 @@ class LolPickSupportTab(QWidget):
             # 指定矩形のみをキャプチャ
             pix = screen.grabWindow(0, rx, ry, rw, rh)
 
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            path = os.path.join(tempfile.gettempdir(), f"diaryapp_screenshot_{ts}.png")
-            saved = pix.save(path, "PNG")
-            if not saved:
-                self.result_box.append("スクリーンショットの保存に失敗しました。")
-                return
+            # PIL.Image に変換
+            buf = QBuffer()
+            buf.open(QBuffer.ReadWrite)
+            pix.save(buf, "PNG")
+            data = bytes(buf.data())
+            buf.close()
+            full_img = Image.open(BytesIO(data))
 
-            ocr_text = None
-            # OCR が利用可能なら試行（pytesseract + PIL）
-            try:
-                import pytesseract
-                from PIL import Image
-                buf = QBuffer()
-                buf.open(QBuffer.ReadWrite)
-                pix.save(buf, "PNG")
-                data = bytes(buf.data())
-                buf.close()
-                img = Image.open(BytesIO(data))
-                try:
-                    # まず日本語指定で試す
-                    ocr_text = pytesseract.image_to_string(img, lang="jpn")
-                except Exception:
-                    ocr_text = pytesseract.image_to_string(img)
-            except Exception:
-                ocr_text = None
+            # trim フォルダの作成（プロジェクトルート直下）
+            project_root = os.path.dirname(os.path.dirname(__file__))
+            trim_dir = os.path.join(project_root, "trim")
+            os.makedirs(trim_dir, exist_ok=True)
 
-            # OCR結果からチャンピオン名候補を簡易抽出（正規化して部分一致）
-            found = []
-            if ocr_text:
-                norm = self._to_hiragana(ocr_text)
-                for name in self.champions:
-                    if name == "指定なし":
-                        continue
-                    if self._to_hiragana(name) in norm:
-                        found.append(name)
+            # 赤枠の座標（オーバーレイと同じ計算）
+            rect_width = int(rw * 0.15)
+            rect_height = int(rh * 0.08)
+            margin = 10
 
-            # 表示（どの領域を保存したか明示）
-            msg = f"スクリーンショットを保存しました: {path} (領域: x={rx}, y={ry}, w={rw}, h={rh})"
-            if found:
-                msg += "\n検出されたチャンピオン候補: " + ", ".join(found)
-            else:
-                if ocr_text is not None:
-                    msg += "\nOCR 実行済み。候補は検出されませんでした。"
-                else:
-                    msg += "\nOCR は利用できません（pytesseract が未インストール）。"
+            # 左上の赤枠（相対座標）
+            left_box = (margin, margin, margin + rect_width, margin + rect_height)
+            # 右上の赤枠（相対座標）
+            right_box = (rw - rect_width - margin, margin, rw - margin, margin + rect_height)
+
+            # 各赤枠を5分割してアイコンを切り出し・分類・保存
+            results = []
+            ts = time.strftime("%Y%m%d_%H%M%S")  # 共通のタイムスタンプ
+            
+            for box_name, box in [("左チーム", left_box), ("右チーム", right_box)]:
+                x1, y1, x2, y2 = box
+                box_width = x2 - x1
+                icon_width = box_width // 5  # 5体均等分割
+                
+                team_champions = []
+                for i in range(5):
+                    icon_x1 = x1 + i * icon_width
+                    icon_x2 = icon_x1 + icon_width
+                    icon_box = (icon_x1, y1, icon_x2, y2)
+                    
+                    # アイコン領域を切り出し
+                    icon_img = full_img.crop(icon_box)
+                    
+                    # 分類
+                    champion_name = self._classify_champion_icon(icon_img)
+                    team_champions.append(champion_name)
+                    
+                    # trim フォルダに保存（ファイル名: チャンピオン名_時刻_チーム_番号.png）
+                    team_prefix = "left" if box_name == "左チーム" else "right"
+                    filename = f"{champion_name}_{ts}_{team_prefix}_{i+1}.png"
+                    save_path = os.path.join(trim_dir, filename)
+                    try:
+                        icon_img.save(save_path, "PNG")
+                    except Exception as e:
+                        print(f"アイコン保存エラー ({filename}): {e}")
+                
+                results.append(f"{box_name}: {', '.join(team_champions)}")
+            
+            # 結果を表示
+            msg = "【チャンピオン分類結果】\n" + "\n".join(results)
+            msg += f"\n\n切り出したアイコンを保存しました: {trim_dir}"
             self.result_box.append(msg)
+            
+            # デバッグ用: スクリーンショット全体を保存
+            full_path = os.path.join(tempfile.gettempdir(), f"diaryapp_screenshot_{ts}.png")
+            full_img.save(full_path, "PNG")
+            self.result_box.append(f"スクリーンショット全体を保存: {full_path}")
+            
         except Exception as e:
             self.result_box.append(f"スクリーンショット取得中にエラーが発生しました: {e}")
+            import traceback
+            traceback.print_exc()
 
     def on_clear(self):
         for cb in self.ban_combos + self.enemy_picks_combos + self.our_picks_combos:
