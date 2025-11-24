@@ -73,7 +73,7 @@ class ScreenOverlay(QWidget):
         painter.setBrush(Qt.NoBrush)
 
         # 横長の長方形のサイズ（枠内に収まるように調整）
-        rect_width = int(rw * 0.15)  # メイン枠の40%幅
+        rect_width = int(rw * 0.15)  # メイン枠の15%幅
         rect_height = int(rh * 0.08)  # メイン枠の8%高さ
         margin = 10  # メイン枠からのマージン
 
