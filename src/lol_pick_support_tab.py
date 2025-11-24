@@ -419,7 +419,11 @@ class LolPickSupportTab(QWidget):
                     if len(parts) != 2:
                         continue
                     img_path = parts[0].strip()
-                    label = int(parts[1].strip())
+                    try:
+                        label = int(parts[1].strip())
+                    except ValueError:
+                        print(f"警告: ラベルの解析に失敗しました: {line}")
+                        continue
                     # champion_icons/ChampionName.png から ChampionName を抽出
                     champion_name = os.path.splitext(os.path.basename(img_path))[0]
                     self.label_to_champion[label] = champion_name
