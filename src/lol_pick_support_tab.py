@@ -436,8 +436,14 @@ class LolPickSupportTab(QWidget):
                 self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
                 self.model.eval()
                 print(f"学習済みモデルを読み込みました: {model_path} (クラス数: {num_classes})")
+            except FileNotFoundError:
+                print(f"モデル読み込みエラー: ファイルが見つかりません: {model_path}")
+                self.model = None
+            except RuntimeError as e:
+                print(f"モデル読み込みエラー: モデル構造の不一致またはデバイスエラー: {e}")
+                self.model = None
             except Exception as e:
-                print(f"モデル読み込みエラー: {e}")
+                print(f"モデル読み込みエラー（予期しないエラー）: {e}")
                 self.model = None
         else:
             print(f"警告: モデルファイルまたはtrain_list.txtが見つかりません。")
