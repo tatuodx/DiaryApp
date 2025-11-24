@@ -433,7 +433,7 @@ class LolPickSupportTab(QWidget):
         if os.path.exists(model_path) and num_classes > 0:
             try:
                 self.model = SimpleCNN(num_classes=num_classes).to(self.device)
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
                 self.model.eval()
                 print(f"学習済みモデルを読み込みました: {model_path} (クラス数: {num_classes})")
             except Exception as e:
